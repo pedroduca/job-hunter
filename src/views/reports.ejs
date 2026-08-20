@@ -106,6 +106,16 @@ const anyFilterActive = !!(filterSource || filterVerdict || filterCompany);
       <span style="font-size:13.5px;font-weight:800;white-space:nowrap;color:var(--ink)"><%= run.ran_at_date %></span>
       <span style="font-size:12.5px;color:var(--faint);font-weight:600;white-space:nowrap"><%= run.ran_at_time %></span>
       <%- statusPill(run.status) %>
+      <% if (['failed', 'partial_error', 'stopped'].includes(run.status) && run.session_id) { %>
+      <button type="button" class="rl-replay-btn" data-session-id="<%= run.session_id %>"
+              onclick="event.stopPropagation(); event.preventDefault(); replaySession('<%= run.session_id %>', this)"
+              title="Re-run this session with the same providers, roles and date range"
+              aria-label="Replay this run"
+              style="display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border:1px solid #e2e5ec;border-radius:999px;background:#fff;color:var(--accent);font-size:11px;font-weight:800;cursor:pointer">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 1 2.6 6.4M3 12V6m0 6h6"/></svg>
+        Replay
+      </button>
+      <% } %>
       <% if (run.trigger === 'manual') { %><span title="Started manually" style="display:inline-flex;align-items:center;justify-content:center;height:20px;min-width:20px;padding:0 5px;border-radius:6px;background:#eef2ff;color:var(--accent);font-size:11px;font-weight:800">M</span><% } %>
       <span class="rl-sum-sep" style="width:1px;height:13px;background:#e2e5ea"></span>
       <span style="font-size:12.5px;font-weight:600;color:var(--muted);white-space:nowrap"><%= runProviderName(run) %></span>
@@ -218,6 +228,36 @@ const anyFilterActive = !!(filterSource || filterVerdict || filterCompany);
 // ── Config from server ──
 const RL_ROW_FILTER = <%- JSON.stringify({ verdict: filterVerdict || '', company: filterCompany || '' }) %>;
 const RL_GRID = 'minmax(220px,1fr) 150px 60px 122px 100px 84px';
+
+// ── Replay ──
+// Re-triggers the whole run session (all providers it originally used) with the same date
+// range and roles that produced it. Session-scoped, not row-scoped: one click on any
+// provider's row within a failed session replays the full session.
+async function replaySession(sessionId, btn) {
+  if (btn.disabled) return;
+  btn.disabled = true;
+  const originalHTML = btn.innerHTML;
+  btn.innerHTML = 'Replaying…';
+  try {
+    const res = await fetch('/api/run/session/' + encodeURIComponent(sessionId) + '/replay', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to start replay.');
+    document.querySelectorAll('.rl-replay-btn').forEach(function(b) { b.disabled = true; });
+    if (window.JHUI && typeof window.JHUI.toast === 'function') {
+      window.JHUI.toast(data.message || 'Replay started.');
+    } else {
+      alert(data.message || 'Replay started. Check the Dashboard for progress.');
+    }
+  } catch (err) {
+    btn.disabled = false;
+    btn.innerHTML = originalHTML;
+    if (window.JHUI && typeof window.JHUI.toast === 'function') {
+      window.JHUI.toast(err.message || 'Failed to start replay.');
+    } else {
+      alert(err.message || 'Failed to start replay.');
+    }
+  }
+}
 
 function escHtml(str) {
   return String(str == null ? '' : str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
