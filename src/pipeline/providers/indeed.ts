@@ -9,6 +9,7 @@ import { ApifyClient } from 'apify-client';
 import type { JobPosting, SearchFilters, DateRange, FetchResult, ProviderCompanyData } from '../types';
 import { filterByTimeWindow } from '../types';
 import { resolveCountries } from '../locationNormalizer';
+import { withRetry } from '../retry';
 
 const ACTOR_ID = 'valig/indeed-jobs-scraper';
 
@@ -203,15 +204,17 @@ export async function fetchWithIndeed(
   const results = await Promise.all(calls.map(async ({ keyword, location, country }) => {
     const actorLocation = toIndeedLocation(location);
     console.log(`[indeed] Searching: "${keyword}" in "${actorLocation}" (${country})`);
-    const run = await client.actor(ACTOR_ID).call({
-      title: keyword,
-      location: actorLocation,
-      country,
-      limit: 100,
-      datePosted,
-    }, { waitSecs: 900 });
-    const { items } = await client.dataset(run.defaultDatasetId).listItems();
-    return items as IndeedJob[];
+    return withRetry(`indeed "${keyword}"@"${actorLocation}"`, async () => {
+      const run = await client.actor(ACTOR_ID).call({
+        title: keyword,
+        location: actorLocation,
+        country,
+        limit: 100,
+        datePosted,
+      }, { waitSecs: 900 });
+      const { items } = await client.dataset(run.defaultDatasetId).listItems();
+      return items as IndeedJob[];
+    });
   }));
 
   const seen = new Set<string>();

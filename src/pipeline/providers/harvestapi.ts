@@ -6,6 +6,7 @@
 import { ApifyClient } from 'apify-client';
 import type { JobPosting, SearchFilters, DateRange, FetchResult, ProviderCompanyData } from '../types';
 import { parsePostedDate, filterByTimeWindow } from '../types';
+import { withRetry } from '../retry';
 
 interface HarvestJobLocation {
   linkedinText?: string;
@@ -163,13 +164,6 @@ function getPostedLimit(dateRange: DateRange): string {
   return 'month';
 }
 
-const FETCH_MAX_ATTEMPTS = 3;
-const FETCH_RETRY_DELAY_MS = 5_000;
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export async function fetchWithHarvestApi(
   filters: SearchFilters,
   apifyToken: string,
@@ -193,41 +187,26 @@ export async function fetchWithHarvestApi(
   const keywordsStr = filters.keywords.map((k) => `"${k}"`).join(', ');
   console.log(`[harvestapi] Starting actor run — ${filters.keywords.length} keywords × ${filters.locations.length} locations: ${keywordsStr}`);
 
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= FETCH_MAX_ATTEMPTS; attempt++) {
-    try {
-      const run = await client.actor('harvestapi/linkedin-job-search').call(actorInput, { waitSecs: 900 });
+  return withRetry('harvestapi', async () => {
+    const run = await client.actor('harvestapi/linkedin-job-search').call(actorInput, { waitSecs: 900 });
 
-      console.log(`[harvestapi] Actor run complete (${run.id}), fetching dataset items…`);
+    console.log(`[harvestapi] Actor run complete (${run.id}), fetching dataset items…`);
 
-      const apifyCostUsd = typeof (run as unknown as Record<string, unknown>).usageTotalUsd === 'number'
-        ? (run as unknown as Record<string, unknown>).usageTotalUsd as number
-        : null;
+    const apifyCostUsd = typeof (run as unknown as Record<string, unknown>).usageTotalUsd === 'number'
+      ? (run as unknown as Record<string, unknown>).usageTotalUsd as number
+      : null;
 
-      const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    const { items } = await client.dataset(run.defaultDatasetId).listItems();
 
-      console.log(`[harvestapi] Raw items from actor: ${items.length}`);
+    console.log(`[harvestapi] Raw items from actor: ${items.length}`);
 
-      const jobs = (items as HarvestJob[])
-        .map(mapToJobPosting)
-        .filter((j) => j.jobId)
-        .filter((j) => filterByTimeWindow(j, dateRange));
+    const jobs = (items as HarvestJob[])
+      .map(mapToJobPosting)
+      .filter((j) => j.jobId)
+      .filter((j) => filterByTimeWindow(j, dateRange));
 
-      console.log(`[harvestapi] Jobs after time-window filter: ${jobs.length}`);
+    console.log(`[harvestapi] Jobs after time-window filter: ${jobs.length}`);
 
-      return { jobs, apifyCostUsd };
-    } catch (err) {
-      lastErr = err;
-      const code = (err as NodeJS.ErrnoException).code;
-      const isTransient = code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'ECONNABORTED';
-      if (isTransient && attempt < FETCH_MAX_ATTEMPTS) {
-        console.warn(`[harvestapi] Attempt ${attempt} failed (${code}), retrying in ${FETCH_RETRY_DELAY_MS / 1000}s…`);
-        await sleep(FETCH_RETRY_DELAY_MS);
-      } else {
-        break;
-      }
-    }
-  }
-
-  throw lastErr;
+    return { jobs, apifyCostUsd };
+  });
 }
