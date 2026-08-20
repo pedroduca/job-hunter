@@ -7,11 +7,10 @@
 import { ApifyClient } from 'apify-client';
 import type { JobPosting, SearchFilters, DateRange, FetchResult } from '../types';
 import { filterByTimeWindow } from '../types';
+import { withRetry } from '../retry';
 
 const ACTOR_ID = 'valig/linkedin-jobs-scraper';
 const LIMIT_PER_CALL = 1000;
-const FETCH_MAX_ATTEMPTS = 3;
-const FETCH_RETRY_DELAY_MS = 5_000;
 
 interface ValigJob {
   id?: string;
@@ -58,10 +57,6 @@ function mapToJobPosting(item: ValigJob): JobPosting {
   };
 }
 
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 // Actor's `remote` filter codes: 1 = On-site, 2 = Remote, 3 = Hybrid
 const WORK_MODE_MAP: Record<string, string> = {
   onsite: '1',
@@ -102,26 +97,12 @@ async function runSingleCall(
   if (remote.length > 0) actorInput.remote = remote;
   if (contractType.length > 0) actorInput.contractType = contractType;
 
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= FETCH_MAX_ATTEMPTS; attempt++) {
-    try {
-      const run = await client.actor(ACTOR_ID).call(actorInput, { waitSecs: 900 });
-      const { items } = await client.dataset(run.defaultDatasetId).listItems();
-      const costUsd = 0.001 + items.length * 0.0004;
-      return { items: items as ValigJob[], costUsd };
-    } catch (err) {
-      lastErr = err;
-      const code = (err as NodeJS.ErrnoException).code;
-      const isTransient = code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'ECONNABORTED';
-      if (isTransient && attempt < FETCH_MAX_ATTEMPTS) {
-        console.warn(`[valig] "${keyword}"@"${location}" attempt ${attempt} failed (${code}), retrying…`);
-        await sleep(FETCH_RETRY_DELAY_MS);
-      } else {
-        break;
-      }
-    }
-  }
-  throw lastErr;
+  return withRetry(`valig "${keyword}"@"${location}"`, async () => {
+    const run = await client.actor(ACTOR_ID).call(actorInput, { waitSecs: 900 });
+    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    const costUsd = 0.001 + items.length * 0.0004;
+    return { items: items as ValigJob[], costUsd };
+  });
 }
 
 export async function fetchWithValig(

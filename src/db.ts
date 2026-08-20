@@ -2263,6 +2263,20 @@ The full post text is stored as the job description — do not repeat or summari
   } catch (err) {
     console.warn('[db] Migration v_deleted_profiles failed (non-fatal):', (err as Error).message);
   }
+
+  // v_run_replay_params: date_range + group_ids_json on search_runs, so a "Replay" action can
+  // re-trigger a past run with the exact same parameters instead of guessing (dateRange was
+  // never persisted before this; groupIds only existed transiently in runner.ts options).
+  try {
+    const cols = db.prepare(`PRAGMA table_info(search_runs)`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'date_range')) {
+      db.exec(`ALTER TABLE search_runs ADD COLUMN date_range TEXT`);
+      db.exec(`ALTER TABLE search_runs ADD COLUMN group_ids_json TEXT`);
+      console.log('[db] Migration v_run_replay_params: search_runs.date_range + group_ids_json added');
+    }
+  } catch (err) {
+    console.warn('[db] Migration v_run_replay_params failed (non-fatal):', (err as Error).message);
+  }
 }
 
 function initSchema(db: Database): void {
@@ -2354,7 +2368,9 @@ function initSchema(db: Database): void {
       status              TEXT    NOT NULL DEFAULT 'success',
       error_log           TEXT,
       duration_ms         INTEGER,
-      trigger             TEXT    NOT NULL DEFAULT 'scheduled'
+      trigger             TEXT    NOT NULL DEFAULT 'scheduled',
+      date_range          TEXT,
+      group_ids_json      TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_runs_ran_at ON search_runs(ran_at);
@@ -2900,6 +2916,9 @@ export interface SearchRunRow {
   cost_apify_usd: number | null;
   scraping_provider: string | null;
   job_source: string | null;
+  session_id: string | null;
+  date_range: string | null;
+  group_ids_json: string | null;
 }
 
 export interface SettingsRow {

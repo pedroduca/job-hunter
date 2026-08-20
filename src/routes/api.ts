@@ -157,6 +157,61 @@ router.post('/run/stop', (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
+// Replay a past run session with the exact parameters it originally ran with (date range,
+// groups, providers) — distinct from POST /run, which always uses the profile's *current*
+// settings. Surfaced next to failed/partial sessions in the run history view.
+router.post('/run/session/:sessionId/replay', async (req: Request, res: Response) => {
+  const profileId = req.profile.id;
+  const { sessionId } = req.params;
+
+  if (getIsRunning(profileId)) {
+    res.status(409).json({ success: false, error: 'Pipeline is already running.' });
+    return;
+  }
+
+  const db = getDb();
+  // Scoped by profile_id so one profile can never replay (or discover the existence of)
+  // another profile's run session.
+  const rows = db.prepare(
+    `SELECT scraping_provider, date_range, group_ids_json FROM search_runs WHERE session_id = ? AND profile_id = ?`
+  ).all(sessionId, profileId) as Array<{ scraping_provider: string | null; date_range: string | null; group_ids_json: string | null }>;
+
+  if (rows.length === 0) {
+    res.status(404).json({ success: false, error: 'Run session not found.' });
+    return;
+  }
+
+  const providers = [...new Set(rows.map((r) => r.scraping_provider).filter((p): p is string => !!p))];
+  const dateRange = (rows[0].date_range as DateRange | null) || '24h';
+  let groupIds: number[] | undefined;
+  try {
+    groupIds = rows[0].group_ids_json ? JSON.parse(rows[0].group_ids_json) : undefined;
+  } catch {
+    groupIds = undefined;
+  }
+
+  // Same payment gate as a fresh manual run — replay still spends real credits/keys.
+  const settings = db.prepare('SELECT use_jh_credits, credits_balance, user_openai_api_key, user_apify_api_token FROM settings WHERE profile_id = ?').get(profileId) as { use_jh_credits: number; credits_balance: number; user_openai_api_key: string; user_apify_api_token: string } | undefined;
+  if ((settings?.use_jh_credits ?? 1) !== 0) {
+    const balance = settings?.credits_balance ?? 0;
+    if (balance < MIN_RUN_CREDITS) {
+      res.status(402).json({ success: false, error: `Insufficient credits ($${balance.toFixed(2)}). Please top up to at least $${MIN_RUN_CREDITS.toFixed(2)} to run.` });
+      return;
+    }
+  } else if (!isPaymentReady(settings)) {
+    res.status(402).json({ success: false, error: 'Own API keys are not set. Add your OpenAI key and Apify token in Settings → AI Setup, or switch to credits.' });
+    return;
+  }
+
+  res.json({ success: true, message: 'Replay started. Check dashboard for results.' });
+
+  // Replays are reported as trigger='manual' — a person explicitly requested this run, the
+  // same as clicking "Run Now"; there is no separate 'replay' trigger value in the schema.
+  runPipeline('manual', profileId, { groupIds, dateRange, providers: providers.length ? providers : undefined }).catch((err) => {
+    console.error('[api] Replay pipeline run failed:', err);
+  });
+});
+
 // Pipeline status (used by Run Now polling)
 router.get('/status', (req: Request, res: Response) => {
   const profileId = req.profile.id;

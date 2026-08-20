@@ -454,10 +454,16 @@ async function runPipelineInner(trigger: 'scheduled' | 'manual', profileId: numb
         setStage(profileId, `${providerPrefix}Starting`, Math.round(globalSectionOffset * sw), globalTotalSections,
           { providerIdx: providerIdx + 1, providerCount: providers.length, providerName: providerToSource(scrapingProvider), action: 'Starting' });
 
-        // Insert search_runs row NOW to get a stable run_id for job logs
+        // Insert search_runs row NOW to get a stable run_id for job logs.
+        // date_range/group_ids_json are persisted so a failed run can be replayed later with
+        // the exact parameters it originally ran with (see POST /api/run/session/:sessionId/replay).
         runId = db.prepare(
-          `INSERT INTO search_runs (profile_id, ran_at, status, trigger, scraping_provider, job_source, session_id) VALUES (?, ?, 'running', ?, ?, ?, ?)`
-        ).run(profileId, ranAt, trigger, scrapingProvider, providerToSource(scrapingProvider), sessionId).lastInsertRowid as number;
+          `INSERT INTO search_runs (profile_id, ran_at, status, trigger, scraping_provider, job_source, session_id, date_range, group_ids_json)
+           VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?)`
+        ).run(
+          profileId, ranAt, trigger, scrapingProvider, providerToSource(scrapingProvider), sessionId,
+          dateRange, groupIds && groupIds.length > 0 ? JSON.stringify(groupIds) : null,
+        ).lastInsertRowid as number;
 
         console.log(`[runner] Run ID: ${runId} (provider: ${scrapingProvider})`);
 

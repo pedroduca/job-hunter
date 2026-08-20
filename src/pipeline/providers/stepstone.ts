@@ -7,6 +7,7 @@
 import { ApifyClient } from 'apify-client';
 import type { JobPosting, SearchFilters, DateRange, FetchResult } from '../types';
 import { filterByTimeWindow } from '../types';
+import { withRetry } from '../retry';
 
 const ACTOR_ID = 'valig/stepstone-jobs-scraper';
 
@@ -124,9 +125,11 @@ export async function fetchWithStepStone(
     if (hasFull && !hasPart) input.wt = '80001';
     else if (hasPart && !hasFull) input.wt = '80002';
 
-    const run = await client.actor(ACTOR_ID).call(input, { waitSecs: 900 });
-    const { items } = await client.dataset(run.defaultDatasetId).listItems();
-    return items as StepStoneJob[];
+    return withRetry(`stepstone "${keyword}"@"${location}"`, async () => {
+      const run = await client.actor(ACTOR_ID).call(input, { waitSecs: 900 });
+      const { items } = await client.dataset(run.defaultDatasetId).listItems();
+      return items as StepStoneJob[];
+    });
   }));
 
   const seen = new Set<string>();
